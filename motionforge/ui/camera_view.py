@@ -55,9 +55,10 @@ class CameraView(QLabel):
                     painter.drawLine(int(pts[a][0] * w), int(pts[a][1] * h),
                                      int(pts[b][0] * w), int(pts[b][1] * h))
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor("#69f0ae"))
             for j in _JOINTS:
                 if vis[j] > 0.4:
+                    # joint color shows per-landmark confidence at a glance
+                    painter.setBrush(QColor("#69f0ae") if vis[j] > 0.7 else QColor("#ffd740"))
                     painter.drawEllipse(int(pts[j][0] * w) - 4, int(pts[j][1] * h) - 4, 8, 8)
         painter.end()
 
@@ -72,6 +73,20 @@ class CameraView(QLabel):
         painter.setPen(QColor("#e8eaed"))
         painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
         painter.drawText(34, 24, "ARMED" if self._armed else "PAUSED")
+        # tracking-quality badge from core-landmark confidence
+        if pose_frame.present:
+            core = float(pose_frame.vis[[11, 12, 23, 24]].mean())
+            if core > 0.75:
+                quality, qcolor = "TRACKING: GOOD", "#69f0ae"
+            elif core > 0.45:
+                quality, qcolor = "TRACKING: PARTIAL", "#ffd740"
+            else:
+                quality, qcolor = "TRACKING: POOR", "#ff8a80"
+        else:
+            quality, qcolor = "NO PERSON DETECTED", "#ff8a80"
+        painter.setPen(QColor(qcolor))
+        painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        painter.drawText(w - 190, 24, quality)
         # active held states
         painter.setFont(QFont("Segoe UI", 9))
         painter.setPen(QColor("#ffd740"))

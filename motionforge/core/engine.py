@@ -71,6 +71,7 @@ class MotionEngine:
         # game detection + profiles
         self.profiles = ProfileManager(settings=self.settings)
         self.profile: Profile = self.profiles.get("generic") or Profile()
+        self.recognizer.set_mapped(self.profile.gestures.keys())
         self.detector = GameDetector(ai_identifier=self._ai_identify
                                      if self.gemini and self.settings.get("ai_screenshot_identify") else None)
         self.detector.on_game_changed.subscribe(self._on_game_changed)
@@ -253,6 +254,7 @@ class MotionEngine:
         self.look_thread.sensitivity = total_look
         self.recognizer.configure(p.gesture_sensitivity * self.settings.get("gesture_sensitivity"),
                                   self.settings.get("accessibility"))
+        self.recognizer.set_mapped(p.gestures.keys())
 
     def set_profile(self, p: Profile) -> None:
         self.executor.release_all()

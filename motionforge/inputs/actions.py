@@ -181,7 +181,7 @@ class LookThread(threading.Thread):
     abs mode: eased absolute cursor positioning for pointer-style games."""
 
     RATE_HZ = 120
-    MAX_SPEED = 2600.0   # px/s at full deflection, scaled by sensitivity
+    MAX_SPEED = 1500.0   # px/s at full deflection, scaled by sensitivity
 
     def __init__(self, injector: InputInjector):
         super().__init__(name="mf-look", daemon=True)

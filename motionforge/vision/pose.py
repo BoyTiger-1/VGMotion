@@ -88,12 +88,17 @@ class PoseEstimator:
     """Wraps the MediaPipe PoseLandmarker with runtime model switching."""
 
     def __init__(self, model_complexity: int = 1, auto_performance: bool = True):
+        from motionforge.vision.filters import OneEuroFilter
         self.model_complexity = model_complexity
         self.auto_performance = auto_performance
         self._landmarker = None
         self._infer_ema = 0.0
         self._frames = 0
         self._ts_ms = 0
+        # adaptive smoothing: rock-steady landmarks at rest, minimal lag on
+        # fast gestures (img coords are 0..1 so speeds are smaller -> higher beta)
+        self._filt_img = OneEuroFilter(min_cutoff=0.8, beta=5.0)
+        self._filt_world = OneEuroFilter(min_cutoff=1.0, beta=3.0)
         self._build()
 
     def _build(self) -> None:
@@ -135,6 +140,8 @@ class PoseEstimator:
             self._autotune()
 
         if not result.pose_landmarks:
+            self._filt_img.reset()
+            self._filt_world.reset()
             return _empty_frame(ts, frame_bgr, infer_ms)
 
         lm = result.pose_landmarks[0]
@@ -145,6 +152,8 @@ class PoseEstimator:
             world = np.array([[p.x, -p.y, p.z] for p in wl], dtype=np.float32)  # flip y -> up+
         else:
             world = np.zeros((33, 3), dtype=np.float32)
+        img = self._filt_img.filter(img, ts)
+        world = self._filt_world.filter(world, ts)
         return PoseFrame(t=ts, img=img, world=world, vis=vis,
                          frame_bgr=frame_bgr, infer_ms=infer_ms, present=True)
 

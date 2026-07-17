@@ -153,11 +153,13 @@ class AIReasoner:
             "Available gestures (id: description):\n"
             + "\n".join(f"  {g}: {d}" for g, d in vocab.items()) + "\n"
             + (f"Player preferences learned from past sessions:\n{prefs_note}\n" if prefs_note else "")
-            + "\nRules: gestures marked (held) suit held actions (movement, aim, block, "
-            "crouch); momentary gestures suit one-shot actions. Each gesture maps to at "
-            "most one action. Prefer physically mimetic mappings (swing=melee, "
+            + "\nRules: actions MUST come from the provided list exactly as written — "
+            "never invent, rename, or generalize an action; omit gestures rather than "
+            "force a mapping. Gestures marked (held) suit held actions (movement, aim, "
+            "block, crouch); momentary gestures suit one-shot actions. Each gesture maps "
+            "to at most one action. Prefer physically mimetic mappings (swing=melee, "
             "throw=grenade, hand to mouth=eat/heal). Cover movement and the core "
-            "actions first.\n"
+            "actions first, and don't map more gestures than the game has actions.\n"
             'Reply JSON only: {"gestures": {"gesture_id": "action"}, '
             '"rationale": {"gesture_id": "one short sentence"}}'
         )
@@ -168,6 +170,11 @@ class AIReasoner:
         valid_r: dict[str, str] = {}
         have = set(semantics)
         for g, sem in data["gestures"].items():
+            # hard filter: only real gestures mapped to actions this game
+            # actually has — anything the model invented is dropped
+            if not isinstance(sem, str):
+                continue
+            sem = sem.strip().lower()
             if g in vocab and sem in have and sem not in valid_g.values():
                 valid_g[g] = sem
                 valid_r[g] = str(data.get("rationale", {}).get(g, ""))[:200]

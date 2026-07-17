@@ -27,10 +27,19 @@ class GestureRecognizer:
         self.sensitivity = sensitivity
         self.accessibility = accessibility
         self.detectors = library.build_detectors(sensitivity, accessibility)
+        self.mapped: set[str] = set()   # gestures the active profile binds
         self._pending: list[tuple[int, GestureEvent]] = []
         self._pending_since: float | None = None
         self._suppress_until = -1e9
         self._suppress_except = ""      # gesture name allowed through suppression
+        self._suppress_by_mapped = True
+
+    def set_mapped(self, names) -> None:
+        """Gestures bound in the active profile. A mapped gesture always
+        wins the decision buffer over an unmapped one — the player is trying
+        to perform a gesture the game actually uses. T-pose (pause) always
+        counts as mapped."""
+        self.mapped = set(names or ()) | {"t_pose"}
 
     def configure(self, sensitivity: float | None = None, accessibility: str | None = None) -> None:
         if sensitivity is not None:
@@ -51,7 +60,9 @@ class GestureRecognizer:
                 for ev in d.update(f):
                     if ev.kind == PULSE:
                         if f.t < self._suppress_until and ev.name != self._suppress_except:
-                            continue
+                            # an unmapped emit never suppresses mapped gestures
+                            if self._suppress_by_mapped or ev.name not in self.mapped:
+                                continue
                         self._pending.append((d.priority, ev))
                         if self._pending_since is None:
                             self._pending_since = f.t
@@ -63,12 +74,16 @@ class GestureRecognizer:
 
         # resolve the decision buffer once its window has elapsed
         if self._pending_since is not None and f.t - self._pending_since >= DECISION_WINDOW:
-            self._pending.sort(key=lambda pe: -pe[0])
-            best = self._pending[0][1]
+            # profile-mapped candidates outrank unmapped ones outright;
+            # priority only breaks ties within the same group
+            pool = [pe for pe in self._pending if pe[1].name in self.mapped] or self._pending
+            pool.sort(key=lambda pe: -pe[0])
+            best = pool[0][1]
             self._pending.clear()
             self._pending_since = None
             self._suppress_until = f.t + SUPPRESS_AFTER
             self._suppress_except = best.name
+            self._suppress_by_mapped = best.name in self.mapped
             out.append(best)
         return out
 

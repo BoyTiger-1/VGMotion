@@ -41,11 +41,15 @@ class LookController:
     DWELL_RADIUS = 0.022    # img units counting as "still"
     DWELL_REARM = 0.045     # img units of movement required before next dwell
 
+    OUT_SMOOTH = 0.45   # EMA weight of the new sample for vel-mode output
+
     def __init__(self, mode: str = "head"):
         self.mode = mode
         self.cursor_scale = 1.0                     # higher = less hand travel
         self.dwell_click = False
         self._neutral_nose_dy: float | None = None  # nose-above-shoulder baseline (head pitch)
+        self._ema_x = 0.0                           # smoothed vel-mode output
+        self._ema_y = 0.0
         self._dwell_anchor: tuple[float, float] | None = None
         self._dwell_since: float | None = None
         self._dwell_armed = True
@@ -53,6 +57,7 @@ class LookController:
     def set_mode(self, mode: str) -> None:
         self.mode = mode
         self._neutral_nose_dy = None
+        self._ema_x = self._ema_y = 0.0
         self._dwell_anchor = None
         self._dwell_since = None
         self._dwell_armed = True
@@ -65,11 +70,22 @@ class LookController:
 
     def update(self, f: Features | None) -> LookOutput:
         if f is None or self.mode == "off":
+            self._ema_x = self._ema_y = 0.0
             return LookOutput(active=False)
         try:
-            return getattr(self, f"_{self.mode}")(f)
+            out = getattr(self, f"_{self.mode}")(f)
         except AttributeError:
             return LookOutput(active=False)
+        if out.mode == "vel":
+            if out.active:
+                # smooth the joystick signal so head/hand jitter never
+                # reaches the mouse
+                self._ema_x += self.OUT_SMOOTH * (out.x - self._ema_x)
+                self._ema_y += self.OUT_SMOOTH * (out.y - self._ema_y)
+                out.x, out.y = self._ema_x, self._ema_y
+            else:
+                self._ema_x = self._ema_y = 0.0
+        return out
 
     # -- modes ------------------------------------------------------------
 
@@ -84,8 +100,8 @@ class LookController:
             self._neutral_nose_dy += 0.002 * (dy - self._neutral_nose_dy)  # slow re-center
         # image x+ is the player's left; looking to their left should aim left,
         # and games treat negative mouse dx as left
-        vx = -_deadzone_scale(dx, 0.030, 0.11)
-        vy = -_deadzone_scale(dy - self._neutral_nose_dy, 0.022, 0.075)  # mouse y+ = look down
+        vx = -_deadzone_scale(dx, 0.045, 0.13)
+        vy = -_deadzone_scale(dy - self._neutral_nose_dy, 0.035, 0.09)  # mouse y+ = look down
         return LookOutput("vel", vx, vy, active=True)
 
     def _lean(self, f: Features) -> LookOutput:
@@ -102,8 +118,8 @@ class LookController:
             return LookOutput(active=False)
         dx = float(wrist[0] - shoulder[0])
         dy = float(wrist[1] - shoulder[1])
-        vx = -_deadzone_scale(dx, 0.05, 0.30)  # image x+ = player's left = aim left
-        vy = -_deadzone_scale(dy, 0.05, 0.25)
+        vx = -_deadzone_scale(dx, 0.07, 0.32)  # image x+ = player's left = aim left
+        vy = -_deadzone_scale(dy, 0.07, 0.27)
         return LookOutput("vel", vx, vy, active=True)
 
     def _right_hand(self, f: Features) -> LookOutput:
