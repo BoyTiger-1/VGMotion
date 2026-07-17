@@ -157,6 +157,53 @@ def synthetic_stream(scenario: str) -> list[PoseFrame]:
             P.R_WRIST: (-0.10, 0.42, -0.28), P.R_ELBOW: (-0.22, 0.15, -0.12)}, keep=True)
         b.hold(15)
 
+    elif scenario == "uppercut_right":
+        b.interpolate(4, world_targets={
+            P.R_WRIST: (-0.20, 0.50, -0.20),
+            P.R_ELBOW: (-0.25, 0.25, -0.10)}, keep=True)
+        b.hold(3)
+
+    elif scenario == "stomp_right":
+        b.interpolate(4, world_targets={P.R_ANKLE: (-0.12, -0.55, 0.02)}, keep=True)
+        b.hold(3)
+        b.interpolate(3, world_targets={P.R_ANKLE: (-0.12, -0.88, 0.05)}, keep=True)
+        b.hold(5)
+
+    elif scenario == "two_hand_swing":
+        # grip an imaginary bat (hands stacked ~18cm apart), then swing both
+        b.interpolate(6, world_targets={
+            P.L_WRIST: (+0.07, 0.30, -0.20), P.L_ELBOW: (+0.22, 0.20, -0.10),
+            P.R_WRIST: (-0.11, 0.30, -0.20), P.R_ELBOW: (-0.24, 0.20, -0.10)}, keep=True)
+        b.hold(4)
+        b.interpolate(4, world_targets={
+            P.L_WRIST: (+0.62, 0.32, -0.20), P.L_ELBOW: (+0.45, 0.25, -0.10),
+            P.R_WRIST: (+0.44, 0.30, -0.20), P.R_ELBOW: (+0.26, 0.22, -0.10)}, keep=True)
+        b.hold(3)
+
+    elif scenario == "arms_crossed":
+        b.interpolate(5, world_targets={
+            P.L_WRIST: (-0.12, 0.35, -0.25), P.L_ELBOW: (+0.10, 0.15, -0.12),
+            P.R_WRIST: (+0.12, 0.35, -0.25), P.R_ELBOW: (-0.10, 0.15, -0.12)}, keep=True)
+        b.hold(15)
+
+    elif scenario == "hands_on_head":
+        b.interpolate(6, world_targets={
+            P.L_WRIST: (+0.08, 0.70, 0.0), P.L_ELBOW: (+0.28, 0.50, 0.0),
+            P.R_WRIST: (-0.08, 0.70, 0.0), P.R_ELBOW: (-0.28, 0.50, 0.0)}, keep=True)
+        b.hold(20)
+
+    elif scenario == "climb":
+        for side_w, side_e, x in ((P.R_WRIST, P.R_ELBOW, -0.20), (P.L_WRIST, P.L_ELBOW, +0.20),
+                                  (P.R_WRIST, P.R_ELBOW, -0.20), (P.L_WRIST, P.L_ELBOW, +0.20)):
+            b.interpolate(3, world_targets={side_w: (x, 0.70, -0.05)}, keep=True)
+            b.hold(1)
+            b.interpolate(3, world_targets={side_w: (x, 0.25, -0.05)}, keep=True)
+            b.hold(2)
+
+    elif scenario == "head_shake":
+        for dx in (+0.06, -0.06, +0.06, -0.06, +0.06):
+            b.interpolate(2, world_targets={P.NOSE: (dx, 0.60, -0.05)}, keep=True)
+
     else:
         raise ValueError(f"unknown scenario {scenario!r}")
 

@@ -16,6 +16,8 @@ from motionforge.core.events import PULSE, START
 from motionforge.gestures.library import GESTURE_DESCRIPTIONS, STATE_GESTURES
 from motionforge.ui.camera_view import CameraView
 from motionforge.ui.dialogs import CalibrationDialog, KeybindCaptureDialog, SuggestionDialog
+from motionforge.ui.overlay import OverlayWindow
+from motionforge.ui.sounds import SoundPlayer
 from motionforge.ui.style import QSS
 
 
@@ -62,6 +64,14 @@ class MainWindow(QMainWindow):
         self._pose_counter = 0
         self._build()
         self._connect()
+        # in-game feedback: overlay HUD + sound cues
+        self.sounds = SoundPlayer(engine.settings)
+        self.overlay = OverlayWindow(engine, self.bridge)
+        if engine.settings.get("overlay_enabled", True):
+            self.overlay.show()
+        self.bridge.active.connect(
+            lambda armed: self.sounds.arm() if armed else self.sounds.disarm())
+        self.bridge.gesture.connect(self._on_gesture_sound)
 
     # ------------------------------------------------------------------ layout
 
@@ -199,6 +209,19 @@ class MainWindow(QMainWindow):
         self.model_combo.setCurrentIndex(0 if s.get("auto_performance") else s.get("model_complexity") + 1)
         form.addRow("Pose model", self.model_combo)
 
+        self.overlay_chk = QCheckBox("Show in-game overlay HUD (armed state, gestures, skeleton)")
+        self.overlay_chk.setChecked(bool(s.get("overlay_enabled", True)))
+        form.addRow(self.overlay_chk)
+
+        self.overlay_corner_combo = QComboBox()
+        self.overlay_corner_combo.addItems(["top_right", "top_left", "bottom_right", "bottom_left"])
+        self.overlay_corner_combo.setCurrentText(s.get("overlay_corner", "top_right"))
+        form.addRow("Overlay corner", self.overlay_corner_combo)
+
+        self.sound_chk = QCheckBox("Sound cues (arm/disarm tones, sent tick, blocked buzz)")
+        self.sound_chk.setChecked(bool(s.get("sound_cues", True)))
+        form.addRow(self.sound_chk)
+
         self.foreground_chk = QCheckBox("Inject input only while the game window has focus")
         self.foreground_chk.setChecked(bool(s.get("inject_only_foreground")))
         form.addRow(self.foreground_chk)
@@ -264,6 +287,9 @@ class MainWindow(QMainWindow):
         self.model_combo.currentIndexChanged.connect(self._apply_settings)
         self.foreground_chk.toggled.connect(self._apply_settings)
         self.dryrun_chk.toggled.connect(self._apply_settings)
+        self.overlay_chk.toggled.connect(self._apply_settings)
+        self.overlay_corner_combo.currentTextChanged.connect(self._apply_settings)
+        self.sound_chk.toggled.connect(self._apply_settings)
         self.camera_spin.valueChanged.connect(
             lambda v: self.engine.settings.set("camera_indices", [int(v)]))
 
@@ -292,6 +318,14 @@ class MainWindow(QMainWindow):
         if self.feed.count() > 60:
             self.feed.takeItem(60)
         self.camera.flash_gesture(pretty if not semantic else f"{ev.name} → {semantic}")
+
+    def _on_gesture_sound(self, ev, semantic, input_str, injected):
+        if ev.kind not in (PULSE, START) or not semantic:
+            return
+        if injected:
+            self.sounds.tick()
+        elif self.engine.active:      # armed but blocked (game not focused)
+            self.sounds.blocked()
 
     def _on_stats(self, st):
         self.stat_fps.setText(f"{st.camera_fps:.0f}")
@@ -469,6 +503,12 @@ class MainWindow(QMainWindow):
             self.engine.pose.auto_performance = True
         s.set("inject_only_foreground", self.foreground_chk.isChecked())
         s.set("dry_run", self.dryrun_chk.isChecked())
+        s.set("overlay_enabled", self.overlay_chk.isChecked())
+        s.set("overlay_corner", self.overlay_corner_combo.currentText())
+        s.set("sound_cues", self.sound_chk.isChecked())
+        if hasattr(self, "overlay"):
+            self.overlay.reposition(self.overlay_corner_combo.currentText())
+            self.overlay.setVisible(self.overlay_chk.isChecked())
         self.engine.injector.dry_run = self.dryrun_chk.isChecked()
         self.engine.look.set_mode(self.look_combo.currentText())
         self.engine.look_thread.sensitivity = float(self.look_sens.value())
@@ -476,6 +516,8 @@ class MainWindow(QMainWindow):
                                          self.access_combo.currentText())
 
     def closeEvent(self, e):
+        if hasattr(self, "overlay"):
+            self.overlay.close()
         self.engine.stop()
         super().closeEvent(e)
 

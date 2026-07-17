@@ -519,19 +519,21 @@ class RaiseArmDetector(StateDetector):
 
 
 class ArmsUpDetector(StateDetector):
+    """Both arms extended well above the head (clearly higher than hands
+    resting ON the head, which is its own gesture)."""
     name = "arms_up"
     enter_dwell = 0.20
 
     def _enter_condition(self, f: Features) -> bool:
         nose_y = float(f.w(P.NOSE)[1])
         return (f.visible(P.L_WRIST, P.R_WRIST)
-                and float(f.w(P.L_WRIST)[1]) > nose_y + 0.03
-                and float(f.w(P.R_WRIST)[1]) > nose_y + 0.03)
+                and float(f.w(P.L_WRIST)[1]) > nose_y + 0.20
+                and float(f.w(P.R_WRIST)[1]) > nose_y + 0.20)
 
     def _exit_condition(self, f: Features) -> bool:
         nose_y = float(f.w(P.NOSE)[1])
-        return (float(f.w(P.L_WRIST)[1]) < nose_y - 0.05
-                or float(f.w(P.R_WRIST)[1]) < nose_y - 0.05)
+        return (float(f.w(P.L_WRIST)[1]) < nose_y + 0.10
+                or float(f.w(P.R_WRIST)[1]) < nose_y + 0.10)
 
 
 class BlockDetector(StateDetector):
@@ -541,6 +543,9 @@ class BlockDetector(StateDetector):
 
     def _cond(self, f: Features, y_lo: float, z_off: float, max_elbow: float) -> bool:
         if not f.visible(P.L_WRIST, P.R_WRIST):
+            return False
+        # crossed wrists are the separate "arms_crossed" gesture, not a block
+        if float(f.w(P.L_WRIST)[0]) < float(f.w(P.R_WRIST)[0]):
             return False
         sho_z = float(f.shoulder_mid[2])
         ok = True
@@ -594,9 +599,10 @@ class KickDetector(PulseDetector):
         if not f.visible(self.s["ankle"], self.other["ankle"]):
             return []
         ankle, other_ankle = f.w(self.s["ankle"]), f.w(self.other["ankle"])
-        vz = float(f.v(self.s["ankle"])[2])
+        _, vy, vz = (float(v) for v in f.v(self.s["ankle"]))
         raised = float(ankle[1] - other_ankle[1]) > 0.12
-        if raised and vz < -1.6 / self.sens:
+        # forward-dominant: a downward stomp must not read as a kick
+        if raised and vz < -1.6 / self.sens and -vz >= abs(vy):
             return self._fire(f)
         return []
 
@@ -633,6 +639,208 @@ class TPoseDetector(PulseDetector):
         return []
 
 
+class UppercutDetector(PulseDetector):
+    """Upward punch: fist rockets up through the chest with a bent arm."""
+    priority = 75
+    cooldown = 0.6
+
+    def __init__(self, side: str, sens: float = 1.0):
+        super().__init__(sens)
+        self.side = side
+        self.uses_arm = side
+        self.name = f"uppercut_{side}"
+        self.s = _SIDE[side]
+
+    def update(self, f: Features) -> list[GestureEvent]:
+        if not f.visible(self.s["wrist"], self.s["shoulder"]):
+            return []
+        wrist = f.w(self.s["wrist"])
+        vx, vy, vz = (float(v) for v in f.v(self.s["wrist"]))
+        elbow_angle = f.elbow_angle_l if self.side == LEFT else f.elbow_angle_r
+        # explosive, upward-dominant, bent arm: casually raising a hand (to
+        # the mouth, chest, or head) is far slower than a real uppercut and
+        # must never trigger it
+        if (vy > 3.0 / self.sens and vy >= 1.3 * abs(vx) and vy >= 1.3 * abs(vz)
+                and -0.10 < wrist[1] < 0.55 and elbow_angle < 150):
+            return self._fire(f, min(1.0, vy / 4.5))
+        return []
+
+
+class StompDetector(PulseDetector):
+    """Raise a foot, then stamp it straight down."""
+    priority = 44
+    cooldown = 0.7
+
+    def __init__(self, side: str, sens: float = 1.0):
+        super().__init__(sens)
+        self.side = side
+        self.name = f"stomp_{side}"
+        self.s = _SIDE[side]
+        self.other = _SIDE[RIGHT if side == LEFT else LEFT]
+        self._raised_until = -1e9
+
+    def update(self, f: Features) -> list[GestureEvent]:
+        if not f.visible(self.s["ankle"], self.other["ankle"]):
+            return []
+        ankle, other_ankle = f.w(self.s["ankle"]), f.w(self.other["ankle"])
+        if float(ankle[1] - other_ankle[1]) > 0.10:
+            self._raised_until = f.t + 0.45
+        _, vy, vz = (float(v) for v in f.v(self.s["ankle"]))
+        # downward-dominant: a forward kick must not read as a stomp
+        if f.t < self._raised_until and vy < -2.0 / self.sens and -vy >= 1.2 * abs(vz):
+            return self._fire(f, min(1.0, -vy / 3.5))
+        return []
+
+
+class HeadShakeDetector(PulseDetector):
+    """Shake (axis='x' -> head_shake, 'no') or nod (axis='y' -> head_nod,
+    'yes'): the nose oscillates relative to the shoulders. Avoid mapping
+    these while using head-look aim — turning to aim would trigger them."""
+    priority = 30
+    cooldown = 1.5
+
+    def __init__(self, axis: str, sens: float = 1.0):
+        super().__init__(sens)
+        self.axis = 0 if axis == "x" else 1
+        self.name = "head_shake" if axis == "x" else "head_nod"
+        self._threshold = (0.35 if axis == "x" else 0.30)
+        self._crossings: list[float] = []
+        self._last_sign = 0
+
+    def update(self, f: Features) -> list[GestureEvent]:
+        if not f.visible(P.NOSE, P.L_SHOULDER, P.R_SHOULDER):
+            return []
+        v_rel = float(f.v(P.NOSE)[self.axis]
+                      - (f.v(P.L_SHOULDER)[self.axis] + f.v(P.R_SHOULDER)[self.axis]) / 2)
+        if abs(v_rel) > self._threshold / self.sens:
+            sign = 1 if v_rel > 0 else -1
+            if sign != self._last_sign and self._last_sign != 0:
+                self._crossings.append(f.t)
+            self._last_sign = sign
+        self._crossings = [t for t in self._crossings if f.t - t < 1.0]
+        if len(self._crossings) >= 3:
+            self._crossings.clear()
+            self._last_sign = 0
+            return self._fire(f)
+        return []
+
+
+class TwoHandSwingDetector(PulseDetector):
+    """Both hands together swinging horizontally (bat / axe / golf club)."""
+    name = "two_hand_swing"
+    priority = 55          # beats single-arm swings when both hands move
+    cooldown = 0.6
+
+    def update(self, f: Features) -> list[GestureEvent]:
+        if not f.visible(P.L_WRIST, P.R_WRIST):
+            return []
+        if f.dist(P.L_WRIST, P.R_WRIST) > 0.35:
+            return []
+        lv, rv = f.v(P.L_WRIST), f.v(P.R_WRIST)
+        lvx, rvx = float(lv[0]), float(rv[0])
+        same_dir = (lvx > 0) == (rvx > 0)
+        fast = min(abs(lvx), abs(rvx)) > 1.8 / self.sens
+        dominant = (abs(lvx) >= 1.2 * abs(float(lv[2]))
+                    and abs(rvx) >= 1.2 * abs(float(rv[2])))
+        mid_y = (float(f.w(P.L_WRIST)[1]) + float(f.w(P.R_WRIST)[1])) / 2
+        if same_dir and fast and dominant and 0.0 < mid_y < 0.6:
+            return self._fire(f, min(1.0, abs(lvx) / 3.0))
+        return []
+
+
+class ArmsCrossedDetector(StateDetector):
+    """Forearms crossed into an X in front of the chest/face."""
+    name = "arms_crossed"
+    enter_dwell = 0.15
+
+    def _cond(self, f: Features, margin: float) -> bool:
+        if not f.visible(P.L_WRIST, P.R_WRIST):
+            return False
+        lw, rw = f.w(P.L_WRIST), f.w(P.R_WRIST)
+        sho_z = float(f.shoulder_mid[2])
+        crossed = float(lw[0]) < float(rw[0]) - margin   # left wrist on the right side
+        band = 0.10 < float(lw[1]) < 0.65 and 0.10 < float(rw[1]) < 0.65
+        front = lw[2] < sho_z - 0.03 and rw[2] < sho_z - 0.03
+        return crossed and band and front
+
+    def _enter_condition(self, f: Features) -> bool:
+        return self._cond(f, 0.05)
+
+    def _exit_condition(self, f: Features) -> bool:
+        return not self._cond(f, 0.0)
+
+
+class HandsOnHeadDetector(StateDetector):
+    """Both hands resting on top of the head."""
+    name = "hands_on_head"
+    enter_dwell = 0.25
+
+    def _cond(self, f: Features, radius: float) -> bool:
+        import numpy as np
+        if not f.visible(P.L_WRIST, P.R_WRIST):
+            return False
+        head_top = (f.w(P.L_EAR) + f.w(P.R_EAR)) / 2
+        head_top = head_top + np.array([0.0, 0.10, 0.0], dtype=head_top.dtype)
+        return (float(np.linalg.norm(f.w(P.L_WRIST) - head_top)) < radius
+                and float(np.linalg.norm(f.w(P.R_WRIST) - head_top)) < radius)
+
+    def _enter_condition(self, f: Features) -> bool:
+        return self._cond(f, 0.25)
+
+    def _exit_condition(self, f: Features) -> bool:
+        return not self._cond(f, 0.32)
+
+
+class ClimbDetector(Detector):
+    """Alternating overhead reach-and-pull motions -> 'climb' state
+    (ladders, walls, swimming-style locomotion)."""
+    name = "climb"
+    PULL_VY = -1.5
+
+    def __init__(self, sens: float = 1.0):
+        super().__init__(sens)
+        self._high_until = {LEFT: -1e9, RIGHT: -1e9}
+        self._pulls: list[tuple[float, str]] = []
+        self.climbing = False
+
+    def update(self, f: Features) -> list[GestureEvent]:
+        events: list[GestureEvent] = []
+        if not f.visible(P.L_WRIST, P.R_WRIST):
+            if self.climbing:
+                self.climbing = False
+                events.append(GestureEvent(END, "climb", f.t, 1.0, f.capture_ts))
+            return events
+        nose_y = float(f.w(P.NOSE)[1])
+        for side in (LEFT, RIGHT):
+            s = _SIDE[side]
+            wrist = f.w(s["wrist"])
+            if float(wrist[1]) > nose_y + 0.02:
+                self._high_until[side] = f.t + 0.8
+            vy = float(f.v(s["wrist"])[1])
+            below_shoulder = float(wrist[1]) < float(f.w(s["shoulder"])[1])
+            if (f.t < self._high_until[side] and below_shoulder
+                    and vy < self.PULL_VY / self.sens):
+                if not self._pulls or self._pulls[-1][1] != side or f.t - self._pulls[-1][0] > 0.3:
+                    self._pulls.append((f.t, side))
+                self._high_until[side] = -1e9
+        self._pulls = [(t, s) for t, s in self._pulls if f.t - t < 1.6]
+
+        recent_sides = {s for _, s in self._pulls}
+        should_climb = len(self._pulls) >= 2 and len(recent_sides) == 2
+        if should_climb and not self.climbing:
+            self.climbing = True
+            events.append(GestureEvent(START, "climb", f.t, 1.0, f.capture_ts))
+        elif self.climbing and (not self._pulls or f.t - self._pulls[-1][0] > 1.0):
+            self.climbing = False
+            events.append(GestureEvent(END, "climb", f.t, 1.0, f.capture_ts))
+        return events
+
+    def reset(self) -> None:
+        self._high_until = {LEFT: -1e9, RIGHT: -1e9}
+        self._pulls.clear()
+        self.climbing = False
+
+
 # --------------------------------------------------------------------------
 
 GESTURE_DESCRIPTIONS: dict[str, str] = {
@@ -664,12 +872,23 @@ GESTURE_DESCRIPTIONS: dict[str, str] = {
     "bow_draw": "Extend one arm, pull the other to your shoulder (held)",
     "kick_left": "Front kick with your left leg",
     "kick_right": "Front kick with your right leg",
+    "uppercut_left": "Upward punch with your left fist",
+    "uppercut_right": "Upward punch with your right fist",
+    "stomp_left": "Raise and stamp your left foot down",
+    "stomp_right": "Raise and stamp your right foot down",
+    "head_nod": "Nod your head (yes-yes-yes)",
+    "head_shake": "Shake your head (no-no-no)",
+    "two_hand_swing": "Swing both hands together sideways (bat/axe)",
+    "arms_crossed": "Cross your forearms into an X (held)",
+    "hands_on_head": "Rest both hands on your head (held)",
+    "climb": "Alternating overhead reach-and-pull motions (held)",
     "t_pose": "T-pose ~1s (reserved: pause/resume MotionForge)",
 }
 
 STATE_GESTURES = {
     "crouch", "lean_left", "lean_right", "lean_forward", "lean_back", "walk",
     "sprint", "raise_arm_left", "raise_arm_right", "arms_up", "block", "bow_draw",
+    "arms_crossed", "hands_on_head", "climb",
 }
 
 
@@ -690,15 +909,20 @@ def build_detectors(sens: float = 1.0, accessibility: str = "standing") -> list[
         RaiseArmDetector(LEFT, sens), RaiseArmDetector(RIGHT, sens),
         ArmsUpDetector(sens), BlockDetector(sens), BowDrawDetector(sens),
         KickDetector(LEFT, sens), KickDetector(RIGHT, sens),
+        UppercutDetector(LEFT, sens), UppercutDetector(RIGHT, sens),
+        StompDetector(LEFT, sens), StompDetector(RIGHT, sens),
+        HeadShakeDetector("x", sens), HeadShakeDetector("y", sens),
+        TwoHandSwingDetector(sens), ArmsCrossedDetector(sens),
+        HandsOnHeadDetector(sens), ClimbDetector(sens),
         TPoseDetector(sens),
     ]
+    _TWO_HANDED = {"push", "clap", "arms_up", "block", "bow_draw", "t_pose",
+                   "two_hand_swing", "arms_crossed", "hands_on_head", "climb"}
     if accessibility == "seated":
         drop = {"jump_in_place", "crouch"}  # hip baseline is unreliable seated
         ds = [d for d in ds if d.name not in drop]
     elif accessibility == "one_handed_left":
-        ds = [d for d in ds if d.uses_arm != RIGHT
-              and d.name not in ("push", "clap", "arms_up", "block", "bow_draw", "t_pose")]
+        ds = [d for d in ds if d.uses_arm != RIGHT and d.name not in _TWO_HANDED]
     elif accessibility == "one_handed_right":
-        ds = [d for d in ds if d.uses_arm != LEFT
-              and d.name not in ("push", "clap", "arms_up", "block", "bow_draw", "t_pose")]
+        ds = [d for d in ds if d.uses_arm != LEFT and d.name not in _TWO_HANDED]
     return ds

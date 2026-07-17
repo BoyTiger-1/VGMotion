@@ -89,6 +89,10 @@ class GestureRecognizer:
                 if d.walking:
                     out.append(GestureEvent("end", "walk", now, 1.0, now))
                 d.reset()
+            elif isinstance(d, library.ClimbDetector):
+                if d.climbing:
+                    out.append(GestureEvent("end", "climb", now, 1.0, now))
+                d.reset()
         return out
 
     def active_states(self) -> list[str]:
@@ -100,4 +104,6 @@ class GestureRecognizer:
                     names.append("walk")
                 if d.sprinting:
                     names.append("sprint")
+            elif isinstance(d, library.ClimbDetector) and d.climbing:
+                names.append("climb")
         return names

@@ -29,6 +29,9 @@ DEFAULT_SETTINGS: dict = {
     "dry_run": False,
     "inject_only_foreground": True,
     "kill_switch_key": "f9",
+    "overlay_enabled": True,
+    "overlay_corner": "top_right",   # top_left | top_right | bottom_left | bottom_right
+    "sound_cues": True,
     "ai_enabled": True,
     "ai_screenshot_identify": True,
     "gemini_model": "gemini-flash-latest",
