@@ -209,6 +209,10 @@ class MainWindow(QMainWindow):
         self.model_combo.setCurrentIndex(0 if s.get("auto_performance") else s.get("model_complexity") + 1)
         form.addRow("Pose model", self.model_combo)
 
+        self.hands_chk = QCheckBox("Finger tracking / micro gestures (pinch, fist, thumbs up…)")
+        self.hands_chk.setChecked(bool(s.get("hand_tracking", True)))
+        form.addRow(self.hands_chk)
+
         self.overlay_chk = QCheckBox("Show in-game overlay HUD (armed state, gestures, skeleton)")
         self.overlay_chk.setChecked(bool(s.get("overlay_enabled", True)))
         form.addRow(self.overlay_chk)
@@ -287,6 +291,7 @@ class MainWindow(QMainWindow):
         self.model_combo.currentIndexChanged.connect(self._apply_settings)
         self.foreground_chk.toggled.connect(self._apply_settings)
         self.dryrun_chk.toggled.connect(self._apply_settings)
+        self.hands_chk.toggled.connect(self._apply_settings)
         self.overlay_chk.toggled.connect(self._apply_settings)
         self.overlay_corner_combo.currentTextChanged.connect(self._apply_settings)
         self.sound_chk.toggled.connect(self._apply_settings)
@@ -503,6 +508,9 @@ class MainWindow(QMainWindow):
             self.engine.pose.auto_performance = True
         s.set("inject_only_foreground", self.foreground_chk.isChecked())
         s.set("dry_run", self.dryrun_chk.isChecked())
+        s.set("hand_tracking", self.hands_chk.isChecked())
+        if not self.hands_chk.isChecked() and self.engine.hands is not None:
+            self.engine.hands = None       # picked up next launch; stop feeding now
         s.set("overlay_enabled", self.overlay_chk.isChecked())
         s.set("overlay_corner", self.overlay_corner_combo.currentText())
         s.set("sound_cues", self.sound_chk.isChecked())

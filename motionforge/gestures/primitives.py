@@ -26,6 +26,7 @@ class Features:
     world: np.ndarray          # (33,3) y up+
     vis: np.ndarray            # (33,)
     vel: np.ndarray            # (33,3) world velocity m/s, smoothed
+    vel_img: np.ndarray        # (33,2) image velocity in torso-lengths/s, smoothed
     torso_img: float
     hip_units: float           # + = above standing baseline (jumping), - = below (crouching)
     hip_units_vel: float
@@ -43,6 +44,12 @@ class Features:
 
     def visible(self, *idx: int, thresh: float = 0.4) -> bool:
         return all(self.vis[i] >= thresh for i in idx)
+
+    def img_speed(self, i: int) -> float:
+        """On-camera speed of a landmark in torso-lengths/s. MediaPipe's depth
+        estimate jitters while the pixels stand still, so real gestures must
+        also show real image motion — this is the phantom-motion killer."""
+        return float(np.linalg.norm(self.vel_img[i]))
 
     def dist(self, a: int, b: int) -> float:
         return float(np.linalg.norm(self.world[a] - self.world[b]))
@@ -87,8 +94,10 @@ class FeatureExtractor:
     def __init__(self, calibration: Calibration | None = None):
         self.calibration = calibration or Calibration()
         self._prev_world: np.ndarray | None = None
+        self._prev_img: np.ndarray | None = None
         self._prev_t: float | None = None
         self._vel = np.zeros((33, 3), dtype=np.float32)
+        self._vel_img = np.zeros((33, 2), dtype=np.float32)
         # auto-baseline (used when no explicit calibration)
         self._auto_hip_y = None
         self._auto_torso = None
@@ -100,6 +109,7 @@ class FeatureExtractor:
     def update(self, pf: P.PoseFrame) -> Features | None:
         if not pf.present:
             self._prev_world = None
+            self._prev_img = None
             self._prev_t = None
             return None
 
@@ -107,16 +117,20 @@ class FeatureExtractor:
         if self._prev_t is not None:
             dt = max(1e-3, min(0.25, pf.t - self._prev_t))
 
-        if self._prev_world is not None:
-            raw_vel = (pf.world - self._prev_world) / dt
-            self._vel = self.VEL_ALPHA * raw_vel + (1 - self.VEL_ALPHA) * self._vel
-        self._prev_world = pf.world.copy()
-        self._prev_t = pf.t
-
         hip_img = (pf.img[P.L_HIP] + pf.img[P.R_HIP]) / 2
         sho_img = (pf.img[P.L_SHOULDER] + pf.img[P.R_SHOULDER]) / 2
         torso = float(np.linalg.norm(sho_img - hip_img))
         torso = max(torso, 0.02)
+
+        if self._prev_world is not None:
+            raw_vel = (pf.world - self._prev_world) / dt
+            self._vel = self.VEL_ALPHA * raw_vel + (1 - self.VEL_ALPHA) * self._vel
+        if self._prev_img is not None:
+            raw_vel_img = (pf.img - self._prev_img) / (dt * torso)
+            self._vel_img = self.VEL_ALPHA * raw_vel_img + (1 - self.VEL_ALPHA) * self._vel_img
+        self._prev_world = pf.world.copy()
+        self._prev_img = pf.img.copy()
+        self._prev_t = pf.t
 
         # baseline: explicit calibration wins, else slow-adapting auto baseline
         if self.calibration.valid:
@@ -142,6 +156,7 @@ class FeatureExtractor:
         return Features(
             t=pf.t, dt=dt, present=True,
             img=pf.img, world=pf.world, vis=pf.vis, vel=self._vel.copy(),
+            vel_img=self._vel_img.copy(),
             torso_img=torso,
             hip_units=hip_units, hip_units_vel=hip_units_vel, lean_units=lean_units,
             elbow_angle_l=_angle_deg(pf.world[P.L_SHOULDER], pf.world[P.L_ELBOW], pf.world[P.L_WRIST]),

@@ -286,12 +286,16 @@ class PunchDetector(PulseDetector):
         elbow_angle = f.elbow_angle_l if self.side == LEFT else f.elbow_angle_r
         chest_band = 0.0 < float(wrist[1]) < 0.65    # hanging arms excluded
 
+        # phantom-motion gate: the fist must actually move on camera, not
+        # just in the (noisy) depth estimate
+        on_camera_motion = f.img_speed(self.s["wrist"]) > 0.5 / self.sens
         retracted_recently = any(z > self.RETRACTED for t, z in self._hist
                                  if f.t - t > 0.08)
         thrust = (rel_z < self.EXTENDED / max(self.sens, 0.5)
-                  and retracted_recently and chest_band)
+                  and retracted_recently and chest_band and on_camera_motion)
         snap = (vz < -1.5 / self.sens and -vz >= 1.2 * abs(vx)
-                and rel_z < -0.18 and elbow_angle > 100 and chest_band)
+                and rel_z < -0.18 and elbow_angle > 100 and chest_band
+                and on_camera_motion)
         if thrust or snap:
             self._hist.clear()
             return self._fire(f, min(1.0, -rel_z / 0.45))
@@ -324,7 +328,8 @@ class SwingDetector(PulseDetector):
         # horizontally dominant: punches (depth) and chops (vertical) must not
         # read as swings
         if (abs(vx) > 1.8 / self.sens and abs(vx) >= 1.2 * abs(vz)
-                and abs(vx) >= abs(vy) and chest_band and elbow_angle > 100):
+                and abs(vx) >= abs(vy) and chest_band and elbow_angle > 100
+                and f.img_speed(self.s["wrist"]) > 0.8 / self.sens):
             return self._fire(f, min(1.0, abs(vx) / 3.0))
         return []
 
@@ -352,7 +357,8 @@ class ChopDetector(PulseDetector):
         # downward-dominant AND in front of the body: relaxing a raised arm
         # drops it at your side and must not read as a chop
         if (f.t < self._high_until and vy < -2.0 / self.sens
-                and -vy >= abs(vx) and wrist[2] < shoulder[2] - 0.05):
+                and -vy >= abs(vx) and wrist[2] < shoulder[2] - 0.05
+                and f.img_speed(self.s["wrist"]) > 0.8 / self.sens):
             return self._fire(f, min(1.0, -vy / 3.5))
         return []
 
@@ -378,7 +384,8 @@ class ThrowDetector(PulseDetector):
         if behind:
             self._wound_until = f.t + 0.45
         vz = float(f.v(self.s["wrist"])[2])
-        if f.t < self._wound_until and vz < -1.9 / self.sens:
+        if (f.t < self._wound_until and vz < -1.9 / self.sens
+                and f.img_speed(self.s["wrist"]) > 0.6 / self.sens):
             return self._fire(f, min(1.0, -vz / 3.0))
         return []
 
@@ -396,7 +403,9 @@ class PushDetector(PulseDetector):
         lw, rw = f.w(P.L_WRIST), f.w(P.R_WRIST)
         sho_z = float(f.shoulder_mid[2])
         thr = -1.3 / self.sens
-        if lv < thr and rv < thr and lw[2] < sho_z - 0.10 and rw[2] < sho_z - 0.10:
+        moving = (f.img_speed(P.L_WRIST) > 0.4 / self.sens
+                  and f.img_speed(P.R_WRIST) > 0.4 / self.sens)
+        if lv < thr and rv < thr and lw[2] < sho_z - 0.10 and rw[2] < sho_z - 0.10 and moving:
             return self._fire(f)
         return []
 
@@ -633,7 +642,8 @@ class KickDetector(PulseDetector):
         _, vy, vz = (float(v) for v in f.v(self.s["ankle"]))
         raised = float(ankle[1] - other_ankle[1]) > 0.12
         # forward-dominant: a downward stomp must not read as a kick
-        if raised and vz < -1.4 / self.sens and -vz >= abs(vy):
+        if (raised and vz < -1.4 / self.sens and -vz >= abs(vy)
+                and f.img_speed(self.s["ankle"]) > 0.5 / self.sens):
             return self._fire(f)
         return []
 
@@ -693,7 +703,8 @@ class UppercutDetector(PulseDetector):
         # never read as an uppercut
         in_front = float(wrist[2] - shoulder[2]) < -0.12
         if (vy > 2.7 / self.sens and vy >= 1.3 * abs(vx) and vy >= 1.3 * abs(vz)
-                and -0.10 < wrist[1] < 0.55 and elbow_angle < 150 and in_front):
+                and -0.10 < wrist[1] < 0.55 and elbow_angle < 150 and in_front
+                and f.img_speed(self.s["wrist"]) > 0.8 / self.sens):
             return self._fire(f, min(1.0, vy / 4.0))
         return []
 
@@ -731,28 +742,39 @@ class HeadShakeDetector(PulseDetector):
     priority = 30
     cooldown = 1.5
 
+    AMPLITUDE = 0.035    # meters past baseline that counts as a real swing
+
     def __init__(self, axis: str, sens: float = 1.0):
         super().__init__(sens)
         self.axis = 0 if axis == "x" else 1
         self.name = "head_shake" if axis == "x" else "head_nod"
-        self._threshold = (0.35 if axis == "x" else 0.30)
-        self._crossings: list[float] = []
-        self._last_sign = 0
+        self._baseline: float | None = None
+        self._excursions: list[float] = []
+        self._last_dir = 0
 
     def update(self, f: Features) -> list[GestureEvent]:
         if not f.visible(P.NOSE, P.L_SHOULDER, P.R_SHOULDER):
             return []
-        v_rel = float(f.v(P.NOSE)[self.axis]
-                      - (f.v(P.L_SHOULDER)[self.axis] + f.v(P.R_SHOULDER)[self.axis]) / 2)
-        if abs(v_rel) > self._threshold / self.sens:
-            sign = 1 if v_rel > 0 else -1
-            if sign != self._last_sign and self._last_sign != 0:
-                self._crossings.append(f.t)
-            self._last_sign = sign
-        self._crossings = [t for t in self._crossings if f.t - t < 1.0]
-        if len(self._crossings) >= 3:
-            self._crossings.clear()
-            self._last_sign = 0
+        pos = float(f.w(P.NOSE)[self.axis]
+                    - (f.w(P.L_SHOULDER)[self.axis] + f.w(P.R_SHOULDER)[self.axis]) / 2)
+        if self._baseline is None:
+            self._baseline = pos
+        else:
+            self._baseline += min(1.0, f.dt / 2.0) * (pos - self._baseline)
+
+        # count alternating POSITION excursions past the baseline — velocity
+        # jitter oscillates, but noise almost never swings 3.5cm side to side
+        # four times in a second; a deliberate head shake always does
+        amp = self.AMPLITUDE / self.sens
+        offset = pos - self._baseline
+        direction = 1 if offset > amp else (-1 if offset < -amp else 0)
+        if direction != 0 and direction != self._last_dir:
+            self._excursions.append(f.t)
+            self._last_dir = direction
+        self._excursions = [t for t in self._excursions if f.t - t < 1.2]
+        if len(self._excursions) >= 4:
+            self._excursions.clear()
+            self._last_dir = 0
             return self._fire(f)
         return []
 
@@ -775,7 +797,9 @@ class TwoHandSwingDetector(PulseDetector):
         dominant = (abs(lvx) >= 1.2 * abs(float(lv[2]))
                     and abs(rvx) >= 1.2 * abs(float(rv[2])))
         mid_y = (float(f.w(P.L_WRIST)[1]) + float(f.w(P.R_WRIST)[1])) / 2
-        if same_dir and fast and dominant and 0.0 < mid_y < 0.6:
+        moving = (f.img_speed(P.L_WRIST) > 0.8 / self.sens
+                  and f.img_speed(P.R_WRIST) > 0.8 / self.sens)
+        if same_dir and fast and dominant and 0.0 < mid_y < 0.6 and moving:
             return self._fire(f, min(1.0, abs(lvx) / 3.0))
         return []
 
@@ -914,6 +938,17 @@ GESTURE_DESCRIPTIONS: dict[str, str] = {
     "arms_crossed": "Cross your forearms into an X (held)",
     "hands_on_head": "Rest both hands on your head (held)",
     "climb": "Alternating overhead reach-and-pull motions (held)",
+    # micro gestures (finger tracking layer)
+    "pinch_left": "Touch left thumb to index finger (held) — zero wrist movement",
+    "pinch_right": "Touch right thumb to index finger (held) — zero wrist movement",
+    "fist_left": "Close your left hand into a fist (held)",
+    "fist_right": "Close your right hand into a fist (held)",
+    "open_palm_left": "Show your open left palm (held)",
+    "open_palm_right": "Show your open right palm (held)",
+    "thumbs_up": "Thumbs up ~0.3s",
+    "thumbs_down": "Thumbs down ~0.3s",
+    "victory": "Victory / peace sign ~0.3s",
+    "point_up": "Point your index finger up ~0.3s",
     "t_pose": "T-pose ~1s (reserved: pause/resume MotionForge)",
 }
 
@@ -921,6 +956,8 @@ STATE_GESTURES = {
     "crouch", "lean_left", "lean_right", "lean_forward", "lean_back", "walk",
     "sprint", "raise_arm_left", "raise_arm_right", "arms_up", "block", "bow_draw",
     "arms_crossed", "hands_on_head", "climb",
+    "pinch_left", "pinch_right", "fist_left", "fist_right",
+    "open_palm_left", "open_palm_right",
 }
 
 

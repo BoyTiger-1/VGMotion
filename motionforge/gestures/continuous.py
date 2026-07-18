@@ -110,8 +110,18 @@ class LookController:
         vy = _deadzone_scale(-pitch_src - 0.02, 0.05, 0.20)   # lean in -> look down
         return LookOutput("vel", yaw, vy, active=True)
 
+    BALLISTIC_SPEED = 1.6   # m/s — faster wrist motion is a gesture, not aiming
+
+    def _ballistic(self, f: Features, wrist_idx: int) -> bool:
+        """A punching/swinging hand must not steer: fast wrist motion freezes
+        the aim channel so gestures never drag the cursor."""
+        import numpy as np
+        return float(np.linalg.norm(f.v(wrist_idx))) > self.BALLISTIC_SPEED
+
     def _hand(self, f: Features, side_wrist: int, side_shoulder: int) -> LookOutput:
         if f.vis[side_wrist] < 0.4:
+            return LookOutput(active=False)
+        if self._ballistic(f, side_wrist):
             return LookOutput(active=False)
         wrist, shoulder = f.w(side_wrist), f.w(side_shoulder)
         if wrist[2] > shoulder[2] - 0.08:      # only steer while arm is forward
@@ -135,6 +145,12 @@ class LookController:
         hand left moves the cursor left from the player's point of view.
         Holding the cursor still dwell-clicks (when enabled)."""
         if f.vis[P.R_WRIST] < 0.4:
+            self._dwell_since = None
+            return LookOutput(active=False)
+        # a punching hand is not an aiming hand: freeze the cursor during
+        # ballistic motion so gestures can't fling it
+        if self._ballistic(f, P.R_WRIST):
+            self._dwell_anchor = None
             self._dwell_since = None
             return LookOutput(active=False)
         # engage only while the hand reaches toward the screen (pointing

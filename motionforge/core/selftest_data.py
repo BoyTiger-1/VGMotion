@@ -62,10 +62,23 @@ class _Builder:
         for _ in range(n):
             self.emit()
 
+    IMG_PER_METER = 0.44   # image units per world meter (torso 0.5m <-> 0.22 img)
+
     def interpolate(self, n: int, world_targets: dict[int, tuple] = None,
                     img_targets: dict[int, tuple] = None, keep: bool = False):
         """Move landmarks linearly to targets over n frames; optionally keep
-        the final position as the new base."""
+        the final position as the new base. World-target landmarks without an
+        explicit img target get their image position derived from the world
+        x/y delta — real motion always shows on camera, and the gesture
+        engine's phantom-motion gate requires it."""
+        world_targets = dict(world_targets or {})
+        img_targets = dict(img_targets or {})
+        for i, tgt in world_targets.items():
+            if i not in img_targets:
+                dx = float(tgt[0]) - float(self.world0[i][0])
+                dy = float(tgt[1]) - float(self.world0[i][1])
+                img_targets[i] = (float(self.img0[i][0]) + dx * self.IMG_PER_METER,
+                                  float(self.img0[i][1]) - dy * self.IMG_PER_METER)
         w_start = {i: self.world0[i].copy() for i in (world_targets or {})}
         i_start = {i: self.img0[i].copy() for i in (img_targets or {})}
         for k in range(1, n + 1):
@@ -209,7 +222,7 @@ def synthetic_stream(scenario: str) -> list[PoseFrame]:
             b.hold(2)
 
     elif scenario == "head_shake":
-        for dx in (+0.06, -0.06, +0.06, -0.06, +0.06):
+        for dx in (+0.07, -0.07, +0.07, -0.07, +0.07, -0.07):
             b.interpolate(2, world_targets={P.NOSE: (dx, 0.60, -0.05)}, keep=True)
 
     else:

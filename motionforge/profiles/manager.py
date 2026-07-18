@@ -140,7 +140,8 @@ class ProfileManager:
         if p.genre != "pointer" or p.source == "user" or p.source == "bundled":
             return False
         needs = (not p.dwell_click or "drag" not in p.actions
-                 or p.gestures.get("push") == "click")
+                 or p.gestures.get("push") == "click"
+                 or p.gestures.get("pinch_right") != "drag")
         if not needs:
             return False
         template = next((d for d in build_default_profiles() if d["id"] == "pointer"), None)

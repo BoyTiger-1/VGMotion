@@ -62,6 +62,9 @@ class MotionEngine:
         # vision + gestures
         self.cameras: MultiCamera | None = None
         self.pose: PoseEstimator | None = None
+        self.hands = None                      # HandGestureEstimator (micro gestures)
+        from motionforge.vision.hands import HandTracker
+        self.hand_tracker = HandTracker()
         self.extractor = FeatureExtractor(
             Calibration.from_dict(self.settings.get("calibration") or {}))
         self.recognizer = GestureRecognizer(self.settings.get("gesture_sensitivity"),
@@ -80,6 +83,7 @@ class MotionEngine:
         self.active = False              # motion control armed
         self.running = False
         self._inject_ok = False
+        self._look_freeze_until = 0.0
         self._kill_prev = False
         self._stats = PipelineStats()
         self._last_stats_emit = 0.0
@@ -104,6 +108,12 @@ class MotionEngine:
             return False
         if self.pose is None:
             self.pose = PoseEstimator(s.get("model_complexity"), s.get("auto_performance"))
+        if self.hands is None and s.get("hand_tracking", True):
+            try:
+                from motionforge.vision.hands import HandGestureEstimator
+                self.hands = HandGestureEstimator()
+            except Exception as e:
+                self.on_status.emit(f"Micro gestures unavailable: {e}")
         self._vision_thread = threading.Thread(target=self._vision_loop,
                                                name="mf-vision", daemon=True)
         self._vision_thread.start()
@@ -121,6 +131,8 @@ class MotionEngine:
         self.executor.stop()
         if self.pose:
             self.pose.close()
+        if self.hands:
+            self.hands.close()
 
     # -------------------------------------------------------------- arming
 
@@ -157,6 +169,7 @@ class MotionEngine:
         pf = self.pose.process(frame, ts)
         feats = self.extractor.update(pf)
         events = self.recognizer.update(feats)
+        events += self._hand_events(frame, pf, ts, feats)
         self._check_kill_switch()
         self._maybe_switch_camera(pf, ts)
 
@@ -173,8 +186,12 @@ class MotionEngine:
             self.executor.release_all()          # focus lost / disarmed: clean up
         self._inject_ok = inject_ok
 
-        # continuous look / cursor channel
+        # continuous look / cursor channel; frozen briefly after any fired
+        # gesture so the tail of a punch/swing never drags the aim
         out = self.look.update(feats)
+        if ts < self._look_freeze_until:
+            out.active = False
+            out.click = False
         self.look_thread.set_enabled(inject_ok and out.active)
         self.look_thread.set_signal(out.mode, out.x, out.y, out.active)
         if out.click:   # dwell-click from cursor_hand mode
@@ -193,6 +210,8 @@ class MotionEngine:
             injected = bool(inject_ok and binding)
             if injected:
                 self.executor.handle(binding, ev.kind, ev.capture_ts)
+                if ev.kind == PULSE:
+                    self._look_freeze_until = ts + 0.35
             self.on_gesture.emit(ev, semantic, binding.input if binding else None, injected)
 
         # stats + UI frame
@@ -203,11 +222,44 @@ class MotionEngine:
         self._stats.pipeline_p95_ms = self.latency.p95_ms
         self._stats.model_complexity = self.pose.model_complexity
         self._stats.active = self.active
-        self.on_pose.emit(pf, feats, self.recognizer.active_states())
+        self.on_pose.emit(pf, feats,
+                          self.recognizer.active_states() + self.hand_tracker.active_states())
         now = time.perf_counter()
         if now - self._last_stats_emit > 0.5:
             self._last_stats_emit = now
             self.on_stats.emit(self._stats)
+
+    def _hand_events(self, frame, pf, ts: float, feats):
+        """Run the finger-tracking layer and side-match hands to pose wrists."""
+        if self.hands is None:
+            return []
+        if feats is None or not pf.present:
+            return self.hand_tracker.release_all(ts)
+        try:
+            import cv2
+            import numpy as np
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            observations = self.hands.process(rgb, ts)
+            if observations is None:                # skipped frame
+                return self.hand_tracker.update(None, ts)
+            # assign sides by proximity to the pose model's wrists (robust
+            # against MediaPipe's selfie-view handedness ambiguity)
+            wrists = {"left": pf.img[15], "right": pf.img[16]}
+            taken = set()
+            for ob in observations:
+                dists = {s: float(np.hypot(ob.wrist_img[0] - w[0], ob.wrist_img[1] - w[1]))
+                         for s, w in wrists.items() if s not in taken and pf.vis[15 if s == "left" else 16] > 0.3}
+                if not dists:
+                    continue
+                side = min(dists, key=dists.get)
+                if dists[side] < 0.18:
+                    ob.side = side
+                    taken.add(side)
+            return self.hand_tracker.update(observations, ts)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return []
 
     def _on_inject(self, capture_ts: float) -> None:
         self.latency.add_ms((time.perf_counter() - capture_ts) * 1000.0)

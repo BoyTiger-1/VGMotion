@@ -29,6 +29,7 @@ DEFAULT_SETTINGS: dict = {
     "dry_run": False,
     "inject_only_foreground": True,
     "kill_switch_key": "f9",
+    "hand_tracking": True,           # finger-level micro gestures (pinch, fist, ...)
     "overlay_enabled": True,
     "overlay_corner": "top_right",   # top_left | top_right | bottom_left | bottom_right
     "sound_cues": True,

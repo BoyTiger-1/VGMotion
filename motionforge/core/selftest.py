@@ -38,6 +38,19 @@ def _models():
     return f"lite/full/heavy = {[f'{s//1024}KB' for s in sizes]}"
 
 
+@check("micro gestures: hand model + recognizer")
+def _hands():
+    import cv2
+    from motionforge.vision.hands import ensure_hand_model, HandGestureEstimator
+    path = ensure_hand_model()
+    assert path.stat().st_size > 1_000_000
+    est = HandGestureEstimator()
+    img = np.full((480, 640, 3), 70, dtype=np.uint8)
+    obs = est.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), time.perf_counter())
+    est.close()
+    return f"model {path.stat().st_size // 1024}KB, recognizer runs (hands seen: {len(obs or [])})"
+
+
 @check("profiles: defaults + matching")
 def _profiles():
     import tempfile
@@ -201,6 +214,7 @@ def run_selftest(camera: bool = True) -> int:
     print("MotionForge self-test\n" + "=" * 60)
     _imports()
     _models()
+    _hands()
     _profiles()
     _detection()
     _gestures()

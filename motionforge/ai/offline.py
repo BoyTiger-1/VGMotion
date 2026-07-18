@@ -136,10 +136,10 @@ GENRE_TEMPLATES: dict[str, dict[str, tuple[str, str]]] = {
         "raise_arm_right": ("use", "Raising your item hand uses/places what you're holding."),
     },
     "pointer": {
-        # right hand steers the cursor, so every click gesture uses the LEFT
-        # hand (or dwell) — otherwise clicking would move the cursor
+        # right hand steers the cursor; clicking must not move it, so clicks
+        # come from the left hand, a finger pinch, or dwell
         "punch_left": ("click", "Jab your left fist to click — your right hand keeps aiming, so the cursor never moves while you click. Holding the cursor still also dwell-clicks."),
-        "raise_arm_left": ("drag", "Hold your left arm up to grab (mouse held); move your right hand to drag, lower your arm to drop."),
+        "pinch_right": ("drag", "Pinch your right thumb and index to grab (mouse held) — your wrist doesn't move at all; drag with the same hand, spread your fingers to drop."),
         "hand_to_chest": ("right_click", "Tap your chest with your left hand for a right-click."),
     },
     "platformer": {

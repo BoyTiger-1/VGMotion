@@ -133,10 +133,11 @@ def test_pointer_template_uses_left_hand_and_dwell(tmp_path):
     pointer = pm.get("pointer")
     assert pointer.dwell_click is True
     assert pointer.gestures.get("punch_left") == "click"
-    assert pointer.gestures.get("raise_arm_left") == "drag"
+    assert pointer.gestures.get("pinch_right") == "drag"
     assert pointer.actions["drag"] == {"input": "mouse:left", "mode": "hold", "hold_ms": 600}
-    # no right-hand gesture may be bound: the right hand owns the cursor
-    assert all("right" not in g for g in pointer.gestures), pointer.gestures
+    # no right-ARM gesture may be bound (the right hand owns the cursor);
+    # a right-hand finger pinch is fine — it doesn't move the wrist
+    assert all("right" not in g or g == "pinch_right" for g in pointer.gestures), pointer.gestures
 
 
 def test_old_pointer_profile_is_migrated(tmp_path):
@@ -156,6 +157,7 @@ def test_old_pointer_profile_is_migrated(tmp_path):
     chess = pm.get("chess")
     assert chess.dwell_click is True
     assert chess.gestures.get("punch_left") == "click"
+    assert chess.gestures.get("pinch_right") == "drag"
     assert "push" not in chess.gestures
     assert "drag" in chess.actions
     # migration persisted to disk
