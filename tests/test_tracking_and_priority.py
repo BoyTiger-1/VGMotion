@@ -117,6 +117,35 @@ def test_real_punch_still_wins_with_mapping():
     assert pulses == ["punch_right"], pulses
 
 
+def test_slow_casual_punch_detected():
+    """Field-reported: real punches (moderate speed, weak monocular depth
+    signal) were missed. The displacement-based thrust path must catch them."""
+    ex = FeatureExtractor()
+    rec = GestureRecognizer()
+    rec.set_mapped({"punch_right"})
+    pulses = []
+    for pf in synthetic_stream("punch_right_slow"):
+        pulses += [e.name for e in rec.update(ex.update(pf)) if e.kind == PULSE]
+    assert pulses == ["punch_right"], pulses
+
+
+def test_held_out_arm_does_not_refire_punch():
+    """After a punch, keeping the fist extended must not re-trigger; the fist
+    has to come back first."""
+    from motionforge.core.selftest_data import _Builder
+    from motionforge.vision import pose as P
+    b = _Builder()
+    b.hold(30)
+    b.interpolate(5, world_targets={P.R_WRIST: (-0.18, 0.45, -0.60),
+                                    P.R_ELBOW: (-0.18, 0.45, -0.30)}, keep=True)
+    b.hold(60)   # hold the fist out for 2 seconds
+    ex, rec = FeatureExtractor(), GestureRecognizer()
+    fires = 0
+    for pf in b.frames:
+        fires += sum(1 for e in rec.update(ex.update(pf)) if e.name == "punch_right")
+    assert fires == 1, f"extended arm re-fired punch {fires} times"
+
+
 # ---- AI restricted to the game's real actions -------------------------------
 
 class _FakeGemini:

@@ -96,6 +96,14 @@ def synthetic_stream(scenario: str) -> list[PoseFrame]:
             P.R_ELBOW: (-0.18, 0.45, -0.30)}, keep=True)
         b.hold(3)
 
+    elif scenario == "punch_right_slow":
+        # a casual real-world punch: moderate speed, shallower reported depth
+        # (monocular z is usually underestimated), slightly bent arm
+        b.interpolate(9, world_targets={
+            P.R_WRIST: (-0.16, 0.38, -0.34),
+            P.R_ELBOW: (-0.20, 0.30, -0.16)}, keep=True)
+        b.hold(4)
+
     elif scenario == "jump_in_place":
         dy = -0.16
         img_t = {i: (b.img0[i][0], b.img0[i][1] + dy)

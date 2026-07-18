@@ -112,7 +112,7 @@ class JumpDetector(PulseDetector):
     def update(self, f: Features) -> list[GestureEvent]:
         if not f.visible(P.L_HIP, P.R_HIP):   # hips guessed off-frame = no jump
             return []
-        if f.hip_units > 0.22 and f.hip_units_vel > 1.2 / self.sens:
+        if f.hip_units > 0.20 and f.hip_units_vel > 1.0 / self.sens:
             return self._fire(f)
         return []
 
@@ -247,8 +247,23 @@ class WalkInPlaceDetector(Detector):
 # --------------------------------------------------------------------------
 
 class PunchDetector(PulseDetector):
+    """Forward punch. Monocular depth velocity is the noisiest signal a webcam
+    produces (and a punch at the camera foreshortens the arm, wrecking the
+    elbow-angle estimate), so two complementary signals each fire:
+
+    1) THRUST: the wrist traveled from near the body to well in front of the
+       shoulder within ~0.4s — net displacement integrates out z noise and
+       needs no clean velocity spike. This is what catches real punches.
+    2) SNAP: a depth-dominant instantaneous velocity burst (fast jabs whose
+       full travel is short).
+    After firing, the fist must come back toward the body before the next
+    punch can fire — holding your arm out can't retrigger.
+    """
     priority = 80
     cooldown = 0.45
+    WINDOW = 0.42
+    RETRACTED = -0.08     # rel_z above this counts as "near the body"
+    EXTENDED = -0.22      # rel_z below this counts as "out in front"
 
     def __init__(self, side: str, sens: float = 1.0):
         super().__init__(sens)
@@ -256,19 +271,35 @@ class PunchDetector(PulseDetector):
         self.uses_arm = side
         self.name = f"punch_{side}"
         self.s = _SIDE[side]
+        self._hist: list[tuple[float, float]] = []   # (t, wrist z rel to shoulder)
 
     def update(self, f: Features) -> list[GestureEvent]:
         if not f.visible(self.s["wrist"], self.s["shoulder"]):
+            self._hist.clear()
             return []
         wrist, shoulder = f.w(self.s["wrist"]), f.w(self.s["shoulder"])
+        rel_z = float(wrist[2] - shoulder[2])
+        self._hist.append((f.t, rel_z))
+        self._hist = [(t, z) for t, z in self._hist if f.t - t <= self.WINDOW]
+
         vx, _, vz = (float(v) for v in f.v(self.s["wrist"]))
         elbow_angle = f.elbow_angle_l if self.side == LEFT else f.elbow_angle_r
-        # depth-dominant: a horizontal swing that drifts toward the camera
-        # must not read as a punch
-        if (vz < -1.8 / self.sens and -vz >= 1.2 * abs(vx)
-                and wrist[2] < shoulder[2] - 0.20 and elbow_angle > 120):
-            return self._fire(f, min(1.0, -vz / 3.0))
+        chest_band = 0.0 < float(wrist[1]) < 0.65    # hanging arms excluded
+
+        retracted_recently = any(z > self.RETRACTED for t, z in self._hist
+                                 if f.t - t > 0.08)
+        thrust = (rel_z < self.EXTENDED / max(self.sens, 0.5)
+                  and retracted_recently and chest_band)
+        snap = (vz < -1.5 / self.sens and -vz >= 1.2 * abs(vx)
+                and rel_z < -0.18 and elbow_angle > 100 and chest_band)
+        if thrust or snap:
+            self._hist.clear()
+            return self._fire(f, min(1.0, -rel_z / 0.45))
         return []
+
+    def reset(self) -> None:
+        super().reset()
+        self._hist.clear()
 
 
 class SwingDetector(PulseDetector):
@@ -292,9 +323,9 @@ class SwingDetector(PulseDetector):
         chest_band = 0.00 < wrist[1] < 0.60
         # horizontally dominant: punches (depth) and chops (vertical) must not
         # read as swings
-        if (abs(vx) > 2.2 / self.sens and abs(vx) >= 1.2 * abs(vz)
+        if (abs(vx) > 1.8 / self.sens and abs(vx) >= 1.2 * abs(vz)
                 and abs(vx) >= abs(vy) and chest_band and elbow_angle > 100):
-            return self._fire(f, min(1.0, abs(vx) / 3.5))
+            return self._fire(f, min(1.0, abs(vx) / 3.0))
         return []
 
 
@@ -320,9 +351,9 @@ class ChopDetector(PulseDetector):
         vx, vy, _ = (float(v) for v in f.v(self.s["wrist"]))
         # downward-dominant AND in front of the body: relaxing a raised arm
         # drops it at your side and must not read as a chop
-        if (f.t < self._high_until and vy < -2.4 / self.sens
+        if (f.t < self._high_until and vy < -2.0 / self.sens
                 and -vy >= abs(vx) and wrist[2] < shoulder[2] - 0.05):
-            return self._fire(f, min(1.0, -vy / 4.0))
+            return self._fire(f, min(1.0, -vy / 3.5))
         return []
 
 
@@ -347,8 +378,8 @@ class ThrowDetector(PulseDetector):
         if behind:
             self._wound_until = f.t + 0.45
         vz = float(f.v(self.s["wrist"])[2])
-        if f.t < self._wound_until and vz < -2.2 / self.sens:
-            return self._fire(f, min(1.0, -vz / 3.5))
+        if f.t < self._wound_until and vz < -1.9 / self.sens:
+            return self._fire(f, min(1.0, -vz / 3.0))
         return []
 
 
@@ -364,7 +395,7 @@ class PushDetector(PulseDetector):
         lv, rv = float(f.v(P.L_WRIST)[2]), float(f.v(P.R_WRIST)[2])
         lw, rw = f.w(P.L_WRIST), f.w(P.R_WRIST)
         sho_z = float(f.shoulder_mid[2])
-        thr = -1.5 / self.sens
+        thr = -1.3 / self.sens
         if lv < thr and rv < thr and lw[2] < sho_z - 0.10 and rw[2] < sho_z - 0.10:
             return self._fire(f)
         return []
@@ -388,7 +419,7 @@ class ClapDetector(PulseDetector):
         if self._prev_dist is not None and f.dt > 0:
             closing = (d - self._prev_dist) / f.dt
         self._prev_dist = d
-        if d < 0.14 and closing < -0.9 / self.sens:
+        if d < 0.14 and closing < -0.75 / self.sens:
             return self._fire(f)
         return []
 
@@ -602,7 +633,7 @@ class KickDetector(PulseDetector):
         _, vy, vz = (float(v) for v in f.v(self.s["ankle"]))
         raised = float(ankle[1] - other_ankle[1]) > 0.12
         # forward-dominant: a downward stomp must not read as a kick
-        if raised and vz < -1.6 / self.sens and -vz >= abs(vy):
+        if raised and vz < -1.4 / self.sens and -vz >= abs(vy):
             return self._fire(f)
         return []
 
@@ -654,15 +685,16 @@ class UppercutDetector(PulseDetector):
     def update(self, f: Features) -> list[GestureEvent]:
         if not f.visible(self.s["wrist"], self.s["shoulder"]):
             return []
-        wrist = f.w(self.s["wrist"])
+        wrist, shoulder = f.w(self.s["wrist"]), f.w(self.s["shoulder"])
         vx, vy, vz = (float(v) for v in f.v(self.s["wrist"]))
         elbow_angle = f.elbow_angle_l if self.side == LEFT else f.elbow_angle_r
-        # explosive, upward-dominant, bent arm: casually raising a hand (to
-        # the mouth, chest, or head) is far slower than a real uppercut and
-        # must never trigger it
-        if (vy > 3.0 / self.sens and vy >= 1.3 * abs(vx) and vy >= 1.3 * abs(vz)
-                and -0.10 < wrist[1] < 0.55 and elbow_angle < 150):
-            return self._fire(f, min(1.0, vy / 4.5))
+        # upward-dominant, bent arm, and IN FRONT of the torso: raising a
+        # hand to your mouth/chest/head travels close to the body and must
+        # never read as an uppercut
+        in_front = float(wrist[2] - shoulder[2]) < -0.12
+        if (vy > 2.7 / self.sens and vy >= 1.3 * abs(vx) and vy >= 1.3 * abs(vz)
+                and -0.10 < wrist[1] < 0.55 and elbow_angle < 150 and in_front):
+            return self._fire(f, min(1.0, vy / 4.0))
         return []
 
 
@@ -687,8 +719,8 @@ class StompDetector(PulseDetector):
             self._raised_until = f.t + 0.45
         _, vy, vz = (float(v) for v in f.v(self.s["ankle"]))
         # downward-dominant: a forward kick must not read as a stomp
-        if f.t < self._raised_until and vy < -2.0 / self.sens and -vy >= 1.2 * abs(vz):
-            return self._fire(f, min(1.0, -vy / 3.5))
+        if f.t < self._raised_until and vy < -1.8 / self.sens and -vy >= 1.2 * abs(vz):
+            return self._fire(f, min(1.0, -vy / 3.0))
         return []
 
 

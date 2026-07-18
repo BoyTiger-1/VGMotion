@@ -79,8 +79,9 @@ def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 class FeatureExtractor:
     """Stateful: computes velocities and maintains the standing baseline."""
 
-    VEL_ALPHA = 0.65        # smoothing for world velocities (landmarks arrive
-                            # pre-filtered by One-Euro, so favor responsiveness)
+    VEL_ALPHA = 0.8         # smoothing for world velocities (landmarks arrive
+                            # pre-filtered by One-Euro, so favor responsiveness —
+                            # heavy smoothing here would eat real velocity peaks)
     BASELINE_TAU = 8.0      # seconds; slow auto-baseline when uncalibrated
 
     def __init__(self, calibration: Calibration | None = None):
